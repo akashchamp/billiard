@@ -127,13 +127,39 @@ class test_pool:
         result._ack(0, long_ago, 111)
         result._ack(1, long_ago, 222)
         procs = [Mock(pid=111), Mock(pid=222)]
-        timeout_handler = billiard.pool.TimeoutHandler(procs, cache, None, None)
+        timeout_handler = billiard.pool.TimeoutHandler(
+            procs, cache, None, None)
         timeout_handler._trywaitkill = Mock()
         next(timeout_handler.handle_timeouts())
         # The first chunk fails the map, the second must still be killed.
         assert result.ready()
-        killed = [c.args[0].pid for c in timeout_handler._trywaitkill.call_args_list]
+        killed = [c.args[0].pid
+                  for c in timeout_handler._trywaitkill.call_args_list]
         assert killed == [111, 222]
+
+    def test_map_hard_timeout_spares_worker_that_moved_on(self):
+        cache = {}
+        result = billiard.pool.MapResult(cache, 1, 2, None, None, timeout=1)
+        long_ago = time.monotonic() - 10
+        result._ack(0, long_ago, 111)
+        result._ack(1, long_ago, 222)
+        procs = [Mock(pid=111), Mock(pid=222)]
+        timeout_handler = billiard.pool.TimeoutHandler(
+            procs, cache, None, None)
+        killed = []
+
+        def trywaitkill(worker):
+            killed.append(worker.pid)
+            # While the first worker is being killed, the second chunk
+            # finishes and its worker accepts the next task.
+            if worker.pid == 111:
+                other = billiard.pool.ApplyResult(cache, None)
+                other._ack(0, time.monotonic(), 222, None)
+
+        timeout_handler._trywaitkill = trywaitkill
+        next(timeout_handler.handle_timeouts())
+        assert result.ready()
+        assert killed == [111]
 
     def test_map_hard_timeout(self):
         pool = billiard.pool.Pool(2, timeout=1)
@@ -148,7 +174,7 @@ class test_pool:
         finally:
             pool.terminate()
             pool.join()
-    
+
     def test_timeout_handler_trywaitkill_windows(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "win32")
         from unittest.mock import MagicMock

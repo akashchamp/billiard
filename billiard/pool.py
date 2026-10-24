@@ -744,7 +744,7 @@ class TimeoutHandler(PoolThread):
                 # An earlier chunk already failed this map(); the other
                 # chunks that ran out of time still hold their workers.
                 process, _index = self._process_by_pid(pid)
-                if process:
+                if process and not self._runs_other_job(job, pid):
                     self._trywaitkill(process)
             return
         if pid is None:
@@ -766,6 +766,15 @@ class TimeoutHandler(PoolThread):
 
         if process:
             self._trywaitkill(process)
+
+    def _runs_other_job(self, job, pid):
+        # A failed map() has left the cache and no longer sees results, so
+        # a worker that finished its chunk meanwhile may be running another
+        # task by now, and that task must not be killed.
+        return any(
+            pid in other.worker_pids()
+            for other in list(self.cache.values()) if other is not job
+        )
 
     def _trywaitkill(self, worker):
         debug('timeout: sending TERM to %s', worker._name)
